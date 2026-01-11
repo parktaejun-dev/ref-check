@@ -48,8 +48,12 @@ function hasPathSignal(url) {
     const q = u.searchParams;
     const host = normalizeHost(u.hostname);
 
+    // Naver blog: must have logNo parameter (article) not just blogId
+    if (host.includes("blog.naver.com")) {
+      return q.has("logNo") || /\/\d+$/.test(path);
+    }
+
     const domainAllow = (
-      host.includes("blog.naver.com") ||
       host.includes("post.naver.com") ||
       host.endsWith("tistory.com") ||
       host.endsWith("velog.io") ||
@@ -62,7 +66,6 @@ function hasPathSignal(url) {
       path.includes("/entry/") ||
       path.includes("/archives/") ||
       path.includes("/article/") ||
-      path.includes("/blog/") ||
       path.includes("/p/") ||
       /\/\d+$/.test(path)
     );
@@ -179,11 +182,11 @@ function createBadge(state, resultStatus) {
     badge.style.cssText = `
       display: inline-flex;
       align-items: center;
-      margin-left: 6px;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
+      margin-left: 4px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 500;
       font-family: -apple-system, BlinkMacSystemFont, sans-serif;
       vertical-align: middle;
       white-space: nowrap;
@@ -193,23 +196,23 @@ function createBadge(state, resultStatus) {
     if (state === "analyzing") {
       badge.style.background = "#9CA3AF";
       badge.style.color = "white";
-      badge.textContent = "⏳ 분석중";
-      badge.title = "페이지를 분석하고 있습니다...";
+      badge.textContent = "...";
+      badge.title = "분석 중";
     } else if (resultStatus === "DETECTED") {
       badge.style.background = "#EF4444";
       badge.style.color = "white";
-      badge.textContent = "💰 광고";
-      badge.title = "쿠팡 파트너스 링크가 발견되었습니다";
+      badge.textContent = "광고";
+      badge.title = "쿠팡 파트너스 발견";
     } else if (resultStatus === "SUSPICIOUS") {
       badge.style.background = "#F59E0B";
       badge.style.color = "white";
-      badge.textContent = "⚠️ 의심";
-      badge.title = "단축 URL이 발견되었습니다";
+      badge.textContent = "의심";
+      badge.title = "단축 URL 발견";
     } else if (resultStatus === "CLEAN" && currentSettings.showClean) {
       badge.style.background = "#16A34A";
       badge.style.color = "white";
-      badge.textContent = "✅ 안전";
-      badge.title = "광고 링크가 발견되지 않았습니다";
+      badge.textContent = "✓";
+      badge.title = "광고 없음";
     } else {
       return null;
     }
