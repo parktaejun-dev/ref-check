@@ -372,9 +372,14 @@ function findSerpLinks() {
     if (h3) candidates.add(a);
   });
 
-  // Naver
-  document.querySelectorAll('a.total_tit, a.api_txt_lines, a.link_tit, .total_wrap a[href]').forEach((a) => {
+  // Naver - updated selectors for new UI
+  document.querySelectorAll('a[nocr], a.total_tit, a.api_txt_lines, a.link_tit, .total_wrap a[href]').forEach((a) => {
     if (a && a.href) candidates.add(a);
+  });
+
+  // Also check for blog.naver.com links directly
+  document.querySelectorAll('a[href*="blog.naver.com"]').forEach((a) => {
+    if (a && a.href && a.innerText.trim().length > 5) candidates.add(a);
   });
 
   // Daum
