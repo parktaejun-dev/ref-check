@@ -8,7 +8,6 @@ const DEFAULT_SETTINGS = {
   disabledDomains: []
 };
 
-const TOP_N = 5;
 const HOVER_DELAY_MS = 300;
 
 const scannedAnchors = new WeakSet();
@@ -217,7 +216,7 @@ function createBadge(state, resultStatus) {
       badge.style.background = "#16A34A";
       badge.style.color = "white";
       badge.textContent = "✓";
-      badge.title = "광고 없음";
+      badge.title = "미감지";
     } else {
       return null;
     }
@@ -240,17 +239,8 @@ function findInsertPoint(anchor) {
 }
 
 function ensureBadge(anchor) {
-  // Check if badge already exists
-  const existing = anchor.querySelector('[data-adcheck-badge]') ||
-    anchor.parentElement?.querySelector('[data-adcheck-badge]');
-  if (existing) return existing;
-
-  const badge = createBadge("analyzing", null);
-  if (!badge) return null;
-
-  const { element, position } = findInsertPoint(anchor);
-  element.insertAdjacentElement(position, badge);
-  return badge;
+  // Don't show analyzing badge - just return null
+  return null;
 }
 
 function updateBadge(anchor, resultStatus) {
@@ -433,8 +423,8 @@ function runScanner(settings) {
 
   console.log(`[Content] Found ${valid.length} scannable links`);
 
-  valid.slice(0, TOP_N).forEach((a) => scheduleAnalyze(a));
-  valid.forEach((a) => attachHoverTriggers(a));
+  // Scan all links on search page
+  valid.forEach((a) => scheduleAnalyze(a));
 }
 
 // ============================================================================
