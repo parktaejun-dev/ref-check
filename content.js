@@ -1,559 +1,332 @@
-/**
- * Coupang Partners Link Detector
- * Shows warning badges on ALL blog links in search results
- * With user-configurable settings
- */
+// content.js - SERP badge injection
+// Only runs when Preview Mode is ON
 
-(function () {
-  'use strict';
+const DEFAULT_SETTINGS = {
+  previewMode: false,
+  disabledDomains: []
+};
 
-  // ============================================================================
-  // Configuration
-  // ============================================================================
+const TOP_N = 5;
+const HOVER_DELAY_MS = 300;
 
-  const CONFIG = {
-    // Sites to ALWAYS analyze (even if parent domain is in SKIP)
-    ANALYZE_DOMAINS: [
-      'blog.naver.com', 'post.naver.com', 'blog.daum.net', 'brunch.co.kr',
-      'tistory.com', 'velog.io', 'medium.com'
-    ],
-    // Sites to SKIP (don't analyze) - news, portals, official sites
-    SKIP_DOMAINS: [
-      // 포털/검색 (메인만)
-      'www.google.com', 'www.google.co.kr', 'www.naver.com', 'www.daum.net', 'www.bing.com',
-      'search.naver.com', 'search.daum.net',
-      // 뉴스
-      'news.naver.com', 'news.daum.net',
-      'chosun.com', 'donga.com', 'joongang.co.kr', 'hani.co.kr', 'khan.co.kr',
-      'mk.co.kr', 'hankyung.com', 'sbs.co.kr', 'kbs.co.kr', 'mbc.co.kr',
-      'yna.co.kr', 'ytn.co.kr', 'newsis.com', 'news1.kr', 'edaily.co.kr',
-      'zdnet.co.kr', 'bloter.net', 'etnews.com', 'dt.co.kr',
-      // 공식 사이트
-      'apple.com', 'samsung.com', 'lg.com', 'coupang.com', 'kakao.com',
-      'microsoft.com', 'amazon.com', 'github.com', 'stackoverflow.com',
-      // 동영상/SNS
-      'youtube.com', 'youtu.be', 'facebook.com', 'instagram.com', 'twitter.com', 'x.com',
-      // 쇼핑몰 (공식)
-      '11st.co.kr', 'gmarket.co.kr', 'auction.co.kr', 'ssg.com', 'lotteon.com',
-      // 기타 신뢰 사이트
-      'wikipedia.org', 'namu.wiki', 'namuwiki.kr', 'kin.naver.com', 'cafe.naver.com'
-    ],
-    SEARCH_ENGINES: ['google.com', 'google.co.kr', 'search.naver.com', 'search.daum.net', 'bing.com'],
-    MAX_CONCURRENT: 5,
-    CACHE_DURATION: 30 * 60 * 1000,
-    REQUEST_TIMEOUT: 10000
-  };
+const scannedAnchors = new WeakSet();
+const renderedAnchors = new WeakSet();
+const hoverTimers = new WeakMap();
 
-  const DEFAULT_SETTINGS = {
-    theme: 'rocket',
-    badgeSize: 'M',
-    badgePosition: 'after',
-    showYellow: true,
-    disabledDomains: []
-  };
+// ============================================================================
+// Utilities
+// ============================================================================
 
-  // Theme definitions
-  const THEMES = {
-    rocket: { red: '🚀 쿠팡', yellow: '👀 광고?' },
-    dog: { red: '🐶 멍!', yellow: '🐾 킁킁' },
-    simple: { red: '⚡ 쿠팡', yellow: '❕ 주의' },
-    text: { red: '쿠팡 파트너스', yellow: '대가성 문구' }
-  };
+function normalizeHost(host) {
+  return (host || "").toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+}
 
-  const SIZE_MAP = {
-    S: '11px',
-    M: '12px',
-    L: '13px'
-  };
-
-  // ============================================================================
-  // Config Manager
-  // ============================================================================
-
-  class ConfigManager {
-    constructor() {
-      this.settings = { ...DEFAULT_SETTINGS };
-      this.listeners = [];
-    }
-
-    async load() {
-      return new Promise((resolve) => {
-        if (typeof chrome !== 'undefined' && chrome.storage) {
-          chrome.storage.sync.get(DEFAULT_SETTINGS, (result) => {
-            this.settings = result;
-            resolve(this.settings);
-          });
-        } else {
-          resolve(this.settings);
-        }
-      });
-    }
-
-    get(key) {
-      return this.settings[key];
-    }
-
-    getTheme() {
-      return THEMES[this.settings.theme] || THEMES.rocket;
-    }
-
-    getFontSize() {
-      return SIZE_MAP[this.settings.badgeSize] || SIZE_MAP.M;
-    }
-
-    isDisabledDomain(hostname) {
-      return (this.settings.disabledDomains || []).includes(hostname);
-    }
-
-    onChange(callback) {
-      this.listeners.push(callback);
-    }
-
-    notifyChange() {
-      this.listeners.forEach((cb) => cb(this.settings));
-    }
-
-    startListening() {
-      if (typeof chrome !== 'undefined' && chrome.storage) {
-        chrome.storage.onChanged.addListener((changes, area) => {
-          if (area === 'sync') {
-            Object.keys(changes).forEach((key) => {
-              this.settings[key] = changes[key].newValue;
-            });
-            this.notifyChange();
-          }
-        });
-      }
-    }
+function getHostname(url) {
+  try {
+    return normalizeHost(new URL(url).hostname);
+  } catch {
+    return "";
   }
+}
 
-  const configManager = new ConfigManager();
+function isHttpUrl(url) {
+  return /^https?:\/\//i.test(url);
+}
 
-  // ============================================================================
-  // Styles
-  // ============================================================================
+function hasBadExtension(url) {
+  return /\.(pdf|jpg|jpeg|png|gif|webp|svg|zip|rar|7z|mp4|mov|avi|mp3|m4a|apk|exe)(\?|#|$)/i.test(url);
+}
 
-  function injectStyles() {
-    // Remove existing styles if any
-    const existing = document.getElementById('cpd-styles');
-    if (existing) existing.remove();
+function hasPathSignal(url) {
+  try {
+    const u = new URL(url);
+    const path = (u.pathname || "").toLowerCase();
+    const q = u.searchParams;
+    const host = normalizeHost(u.hostname);
 
-    const isGoogle = window.location.hostname.includes('google');
-    const fontSize = configManager.getFontSize();
+    // Domain allow list (strong signals)
+    const domainAllow = (
+      host.includes("blog.naver.com") ||
+      host.includes("post.naver.com") ||
+      host.endsWith("tistory.com") ||
+      host.endsWith("velog.io") ||
+      host.endsWith("brunch.co.kr") ||
+      host.endsWith("medium.com")
+    );
 
-    const style = document.createElement('style');
-    style.id = 'cpd-styles';
-    style.textContent = `
-      .cpd-badge {
-        display: inline-flex !important;
-        align-items: center !important;
-        gap: 3px !important;
-        margin-left: 6px !important;
-        margin-right: 6px !important;
-        padding: 2px 8px !important;
-        border-radius: 4px !important;
-        font-size: ${fontSize} !important;
-        font-weight: 700 !important;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
-        line-height: 1.4 !important;
-        white-space: nowrap !important;
-        text-decoration: none !important;
-        vertical-align: middle !important;
-        ${isGoogle ? 'transform: scaleY(-1) !important;' : 'transform: none !important;'}
-      }
+    // Path signals (generic content URLs)
+    const pathSignals = (
+      path.includes("/post/") ||
+      path.includes("/entry/") ||
+      path.includes("/archives/") ||
+      path.includes("/article/") ||
+      path.includes("/blog/") ||
+      path.includes("/p/") ||
+      /\/\d+$/.test(path) // ends with number (e.g., /123)
+    );
 
-      .cpd-badge-danger {
-        background: #dc2626 !important;
-        color: white !important;
-      }
+    // WordPress signal: ?p=123
+    const wpSignal = q.has("p") && /^[0-9]+$/.test(q.get("p") || "");
 
-      .cpd-badge-safe {
-        background: #16a34a !important;
-        color: white !important;
-      }
+    // Must have meaningful path
+    const hasMeaningfulPath = path.length > 1;
 
-      .cpd-badge-warning {
-        background: #f59e0b !important;
-        color: white !important;
-      }
-
-      .cpd-badge-loading {
-        background: #6b7280 !important;
-        color: white !important;
-      }
-
-      .cpd-badge-error {
-        background: #f59e0b !important;
-        color: white !important;
-      }
-
-      .cpd-spinner {
-        display: inline-block !important;
-        width: 10px !important;
-        height: 10px !important;
-        border: 2px solid rgba(255,255,255,0.3) !important;
-        border-top-color: white !important;
-        border-radius: 50% !important;
-        animation: cpd-spin 0.6s linear infinite !important;
-      }
-
-      @keyframes cpd-spin {
-        to { transform: rotate(360deg); }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
-  // ============================================================================
-  // Utilities
-  // ============================================================================
-
-  function extractUrl(href) {
-    if (!href) return null;
-    if (href.includes('/url?')) {
-      try {
-        const url = new URL(href, window.location.origin);
-        return url.searchParams.get('url') || url.searchParams.get('q') || href;
-      } catch {
-        return href;
-      }
-    }
-    return href;
-  }
-
-  function shouldAnalyzeUrl(url) {
-    try {
-      const urlObj = new URL(url);
-      const hostname = urlObj.hostname.toLowerCase();
-
-      // Skip if it's the current site
-      if (hostname === window.location.hostname) return false;
-
-      // ALWAYS analyze if in ANALYZE_DOMAINS (whitelist - blog subdomains)
-      if (CONFIG.ANALYZE_DOMAINS.some((d) => hostname.includes(d))) return true;
-
-      // Skip if in SKIP_DOMAINS list (blacklist - news, portals, etc.)
-      if (CONFIG.SKIP_DOMAINS.some((d) => hostname.includes(d))) return false;
-
-      // Analyze everything else (WordPress, custom domains, etc.)
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function isSearchPage() {
-    const hostname = window.location.hostname;
-    const pathname = window.location.pathname;
-    const search = window.location.search;
-
-    // Google: must be on /search with q parameter
-    if (hostname.includes('google')) {
-      return pathname.includes('/search') && search.includes('q=');
-    }
-
-    // Naver: must be on search.naver.com
-    if (hostname.includes('naver')) {
-      return hostname.startsWith('search.');
-    }
-
-    // Daum: must be on search.daum.net
-    if (hostname.includes('daum')) {
-      return hostname.startsWith('search.');
-    }
-
-    // Bing: must be on /search with q parameter
-    if (hostname.includes('bing')) {
-      return pathname.includes('/search') && search.includes('q=');
-    }
-
+    return (domainAllow || pathSignals || wpSignal) && hasMeaningfulPath;
+  } catch {
     return false;
   }
+}
 
-  // ============================================================================
-  // Cache & State
-  // ============================================================================
+function shouldScan(url) {
+  if (!isHttpUrl(url)) return false;
+  if (hasBadExtension(url)) return false;
+  return hasPathSignal(url);
+}
 
-  const cache = new Map();
-  let processedLinks = new WeakSet();
-  let processedUrls = new Set();
+// ============================================================================
+// Badge Creation
+// ============================================================================
 
-  function getCached(url) {
-    const c = cache.get(url);
-    return c && Date.now() - c.ts < CONFIG.CACHE_DURATION ? c.result : null;
-  }
+function createBadge(state, resultStatus) {
+  const badge = document.createElement("span");
+  badge.setAttribute("data-adcheck-badge", "1");
 
-  function setCache(url, result) {
-    cache.set(url, { result, ts: Date.now() });
-  }
+  // Reset styles
+  badge.style.cssText = `
+    all: unset;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    vertical-align: middle;
+    white-space: nowrap;
+  `;
 
-  function resetProcessed() {
-    processedLinks = new WeakSet();
-    processedUrls = new Set();
-  }
-
-  // ============================================================================
-  // Badge Functions
-  // ============================================================================
-
-  function createBadge(type, text, tooltip) {
-    const badge = document.createElement('span');
-    badge.className = `cpd-badge cpd-badge-${type}`;
-    badge.textContent = text;
-    if (tooltip) badge.title = tooltip;
-    return badge;
-  }
-
-  function createLoadingBadge() {
-    const badge = document.createElement('span');
-    badge.className = 'cpd-badge cpd-badge-loading';
-    badge.innerHTML = '<span class="cpd-spinner"></span> 분석중';
-    return badge;
-  }
-
-  function insertBadge(titleLink, badge) {
-    // Remove existing badge
-    const parent = titleLink.parentElement;
-    if (parent) {
-      const existing = parent.querySelector('.cpd-badge');
-      if (existing) existing.remove();
-    }
-
-    // Insert based on position setting
-    const position = configManager.get('badgePosition');
-    if (position === 'before') {
-      titleLink.insertAdjacentElement('beforebegin', badge);
-    } else {
-      titleLink.insertAdjacentElement('afterend', badge);
-    }
-  }
-
-  function removeAllBadges() {
-    document.querySelectorAll('.cpd-badge').forEach((b) => b.remove());
-  }
-
-  function showResult(titleLink, result) {
-    const theme = configManager.getTheme();
-    const showYellow = configManager.get('showYellow');
-    let badge;
-
-    if (result.hasCoupangLinks) {
-      const n = result.coupangLinkCount || 1;
-      const isHidden = result.isHidden;
-      const baseText = theme.red;
-      const text = isHidden ? `${baseText} (숨김${n})` : `${baseText} ${n}개`;
-      const tooltip = result.hasDisclosure
-        ? `${isHidden ? '단축URL로 숨겨진 ' : ''}쿠팡 파트너스 링크 ${n}개 발견\n"${result.disclosureText}"`
-        : `쿠팡 파트너스 링크 ${n}개 발견`;
-      badge = createBadge('danger', text, tooltip);
-    } else if (result.hasDisclosure) {
-      // Has disclosure text but no links found - show as warning if enabled
-      if (!showYellow) return; // Don't show yellow badge if disabled
-      badge = createBadge('warning', theme.yellow, `"${result.disclosureText}" 문구 발견`);
-    } else {
-      // No Coupang links found - don't show any badge
-      return;
-    }
-
-    insertBadge(titleLink, badge);
-  }
-
-  function showError(titleLink, msg) {
-    insertBadge(titleLink, createBadge('error', '⚠️ 오류', msg));
-  }
-
-  // ============================================================================
-  // Analyzer
-  // ============================================================================
-
-  let pending = 0;
-  const queue = [];
-
-  function analyze(titleLink, url) {
-    // Check cache
-    const cached = getCached(url);
-    if (cached) {
-      showResult(titleLink, cached);
-      return Promise.resolve();
-    }
-
-    // Show loading
-    insertBadge(titleLink, createLoadingBadge());
-
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        showError(titleLink, '시간초과');
-        resolve();
-      }, CONFIG.REQUEST_TIMEOUT);
-
-      chrome.runtime.sendMessage({ action: 'analyzePage', url }, (response) => {
-        clearTimeout(timeout);
-
-        if (chrome.runtime.lastError || !response || response.error) {
-          showError(titleLink, chrome.runtime.lastError?.message || response?.error || '분석실패');
-        } else {
-          setCache(url, response);
-          showResult(titleLink, response);
-        }
-        resolve();
-      });
-    });
-  }
-
-  function processQueue() {
-    while (queue.length > 0 && pending < CONFIG.MAX_CONCURRENT) {
-      const { titleLink, url } = queue.shift();
-      pending++;
-      analyze(titleLink, url).finally(() => {
-        pending--;
-        processQueue();
-      });
-    }
-  }
-
-  function queueAnalysis(titleLink, url) {
-    queue.push({ titleLink, url });
-    processQueue();
-  }
-
-  // ============================================================================
-  // Scanner
-  // ============================================================================
-
-  function findBlogTitleLinks() {
-    const results = [];
-
-    document.querySelectorAll('a[href]').forEach((link) => {
-      if (processedLinks.has(link)) return;
-
-      let href = extractUrl(link.getAttribute('href'));
-      if (!href || !shouldAnalyzeUrl(href)) return;
-
-      let fullUrl;
-      try {
-        fullUrl = new URL(href, window.location.href).href;
-      } catch {
-        return;
-      }
-
-      // Skip if we already processed this URL
-      if (processedUrls.has(fullUrl)) {
-        processedLinks.add(link);
-        return;
-      }
-
-      // Must be inside a search result container (not header, footer, nav)
-      const isInSearchResult = link.closest('[data-hveid]') ||
-        link.closest('[data-ved]') ||
-        link.closest('.g') ||
-        link.closest('#search') ||
-        link.closest('#rso') ||
-        link.closest('.search_result') ||
-        link.closest('.total_wrap'); // Naver
-
-      if (!isInSearchResult) return;
-
-      // Check if this is a main title link
-      const hasText = link.textContent.trim().length > 5;
-      const inH3 = link.closest('h3');
-      const isMainLink = hasText || inH3;
-
-      if (!isMainLink) return;
-
-      const rect = link.getBoundingClientRect();
-      if (rect.width < 50) return;
-
-
-      processedLinks.add(link);
-      processedUrls.add(fullUrl);
-      results.push({ titleLink: link, url: fullUrl });
-    });
-
-    return results;
-  }
-
-  function scan() {
-    if (!isSearchPage()) {
-      console.log('[CPD] Not a search engine page');
-      return;
-    }
-
-    // Check if current domain is disabled
-    if (configManager.isDisabledDomain(window.location.hostname)) {
-      console.log('[CPD] Domain is disabled');
-      removeAllBadges();
-      return;
-    }
-
-    console.log('[CPD] Scanning for blog links...');
-
-    const blogLinks = findBlogTitleLinks();
-    console.log(`[CPD] Found ${blogLinks.length} blog links`);
-
-    blogLinks.forEach(({ titleLink, url }) => {
-      queueAnalysis(titleLink, url);
-    });
-  }
-
-  // ============================================================================
-  // Re-render on settings change
-  // ============================================================================
-
-  function handleSettingsChange() {
-    console.log('[CPD] Settings changed, re-rendering...');
-
-    // Re-inject styles with new sizes
-    injectStyles();
-
-    // Remove all existing badges
-    removeAllBadges();
-
-    // Reset processed state
-    resetProcessed();
-
-    // Re-scan
-    scan();
-  }
-
-  // ============================================================================
-  // Initialize
-  // ============================================================================
-
-  async function init() {
-    console.log('[CPD] Coupang Partner Detector starting...');
-
-    // Load settings
-    await configManager.load();
-
-    // Check if disabled on this domain
-    if (configManager.isDisabledDomain(window.location.hostname)) {
-      console.log('[CPD] Disabled on this domain');
-      return;
-    }
-
-    // Inject styles
-    injectStyles();
-
-    // Listen for settings changes
-    configManager.onChange(handleSettingsChange);
-    configManager.startListening();
-
-    // Initial scan with delay
-    setTimeout(scan, 500);
-
-    // Watch for dynamic content
-    let scanTimeout;
-    const observer = new MutationObserver(() => {
-      clearTimeout(scanTimeout);
-      scanTimeout = setTimeout(scan, 800);
-    });
-
-    observer.observe(document.body, { childList: true, subtree: true });
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+  if (state === "analyzing") {
+    badge.style.background = "#9CA3AF";
+    badge.style.color = "white";
+    badge.textContent = "⏳ 분석중";
+    badge.title = "페이지를 분석하고 있습니다...";
   } else {
-    init();
+    if (resultStatus === "DETECTED") {
+      badge.style.background = "#EF4444";
+      badge.style.color = "white";
+      badge.textContent = "🚨 광고";
+      badge.title = "제휴/광고 링크가 발견되었습니다";
+    } else if (resultStatus === "SUSPICIOUS") {
+      badge.style.background = "#F59E0B";
+      badge.style.color = "white";
+      badge.textContent = "⚠️ 의심";
+      badge.title = "단축 URL이 발견되었습니다 (광고일 수 있음)";
+    } else {
+      // CLEAN - don't show badge
+      return null;
+    }
   }
-})();
+
+  return badge;
+}
+
+function ensureBadge(anchor) {
+  const next = anchor.nextElementSibling;
+  if (next && next.getAttribute("data-adcheck-badge") === "1") {
+    return next;
+  }
+  const badge = createBadge("analyzing", null);
+  if (badge) anchor.insertAdjacentElement("afterend", badge);
+  return badge;
+}
+
+function updateBadge(anchor, resultStatus) {
+  // Remove existing badge
+  const existing = anchor.nextElementSibling;
+  if (existing && existing.getAttribute("data-adcheck-badge") === "1") {
+    existing.remove();
+  }
+
+  // Create new badge (or nothing if CLEAN)
+  const badge = createBadge("done", resultStatus);
+  if (badge) {
+    anchor.insertAdjacentElement("afterend", badge);
+  }
+}
+
+function removeAllBadges() {
+  document.querySelectorAll('[data-adcheck-badge="1"]').forEach((el) => el.remove());
+}
+
+// ============================================================================
+// Settings
+// ============================================================================
+
+async function getSettings() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => resolve(items || DEFAULT_SETTINGS));
+  });
+}
+
+function isDisabledForThisSite(settings) {
+  const host = normalizeHost(window.location.hostname);
+  const disabled = (settings.disabledDomains || []).map(normalizeHost);
+  return disabled.includes(host);
+}
+
+// ============================================================================
+// Analysis
+// ============================================================================
+
+async function analyzeAndRender(anchor, url) {
+  if (renderedAnchors.has(anchor)) return;
+
+  ensureBadge(anchor);
+
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "ANALYZE_URL", url });
+
+    if (!resp || !resp.ok) {
+      updateBadge(anchor, "CLEAN");
+      renderedAnchors.add(anchor);
+      return;
+    }
+
+    const status = resp.result?.status || "CLEAN";
+    updateBadge(anchor, status);
+    renderedAnchors.add(anchor);
+  } catch (e) {
+    console.log("[Content] Analysis error:", e);
+    updateBadge(anchor, "CLEAN");
+    renderedAnchors.add(anchor);
+  }
+}
+
+function scheduleAnalyze(anchor) {
+  if (!anchor || scannedAnchors.has(anchor)) return;
+
+  const url = anchor.href;
+  if (!url || !shouldScan(url)) return;
+
+  scannedAnchors.add(anchor);
+  analyzeAndRender(anchor, url).catch(() => { });
+}
+
+function attachHoverTriggers(anchor) {
+  anchor.addEventListener("mouseover", () => {
+    if (scannedAnchors.has(anchor)) return;
+    const t = setTimeout(() => scheduleAnalyze(anchor), HOVER_DELAY_MS);
+    hoverTimers.set(anchor, t);
+  });
+
+  anchor.addEventListener("mouseout", () => {
+    const t = hoverTimers.get(anchor);
+    if (t) clearTimeout(t);
+  });
+
+  anchor.addEventListener("mousedown", () => {
+    scheduleAnalyze(anchor);
+  }, { capture: true });
+}
+
+// ============================================================================
+// SERP Link Detection
+// ============================================================================
+
+function findSerpLinks() {
+  const candidates = new Set();
+
+  // Google: links containing h3
+  document.querySelectorAll('a h3').forEach((h3) => {
+    const a = h3.closest("a");
+    if (a && a.href) candidates.add(a);
+  });
+
+  // Also check for links in search result containers
+  document.querySelectorAll('[data-ved] a[href], .g a[href], #rso a[href]').forEach((a) => {
+    if (!a || !a.href) return;
+    const h3 = a.querySelector('h3');
+    if (h3) candidates.add(a);
+  });
+
+  // Naver
+  document.querySelectorAll('a.total_tit, a.api_txt_lines, a.link_tit, .total_wrap a[href]').forEach((a) => {
+    if (a && a.href) candidates.add(a);
+  });
+
+  // Daum
+  document.querySelectorAll('#mArticle a[href], .wrap_cont a[href]').forEach((a) => {
+    if (!a || !a.href) return;
+    const text = (a.textContent || "").trim();
+    if (text.length >= 5) candidates.add(a);
+  });
+
+  // Bing
+  document.querySelectorAll('#b_results a[href]').forEach((a) => {
+    if (!a || !a.href) return;
+    const h2 = a.closest('h2');
+    if (h2) candidates.add(a);
+  });
+
+  // Filter non-result links
+  return Array.from(candidates).filter((a) => {
+    const href = a.getAttribute("href") || "";
+    if (href.startsWith("#")) return false;
+    if (href.startsWith("javascript:")) return false;
+    return true;
+  });
+}
+
+function runScanner(settings) {
+  const links = findSerpLinks();
+  const valid = links.filter((a) => shouldScan(a.href));
+
+  console.log(`[Content] Found ${valid.length} scannable links`);
+
+  // Auto-scan top N
+  valid.slice(0, TOP_N).forEach((a) => scheduleAnalyze(a));
+
+  // On-demand for all
+  valid.forEach((a) => attachHoverTriggers(a));
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+async function main() {
+  const settings = await getSettings();
+
+  // If Preview Mode is OFF, do nothing
+  if (!settings.previewMode) {
+    console.log("[Content] Preview Mode is OFF");
+    return;
+  }
+
+  // If disabled on this site, do nothing
+  if (isDisabledForThisSite(settings)) {
+    console.log("[Content] Disabled on this site");
+    return;
+  }
+
+  console.log("[Content] Starting scanner...");
+  runScanner(settings);
+
+  // Observe for dynamic content
+  const mo = new MutationObserver(() => {
+    runScanner(settings);
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+
+  // React to settings changes
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "sync") return;
+
+    if (changes.previewMode && changes.previewMode.newValue === false) {
+      removeAllBadges();
+    }
+  });
+}
+
+main().catch((e) => console.log("[Content] Error:", e));

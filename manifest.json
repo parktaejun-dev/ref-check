@@ -1,15 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "쿠팡 파트너스 & 제휴 링크 감지기",
-  "version": "1.2.0",
-  "description": "블로그 링크 클릭 시 쿠팡 파트너스 광고 링크가 있는지 미리 감지하여 경고합니다.",
+  "name": "쿠팡 광고 감지기",
+  "version": "2.0.0",
+  "description": "검색 결과에서 제휴/광고 링크가 포함된 페이지를 미리 감지합니다.",
   "permissions": [
     "storage"
   ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "action": {
+    "default_title": "쿠팡 광고 감지기",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -17,19 +22,19 @@
       "128": "icons/icon128.png"
     }
   },
-  "host_permissions": [
-    "<all_urls>"
-  ],
   "content_scripts": [
     {
       "matches": [
-        "<all_urls>"
+        "*://*.google.com/*",
+        "*://*.google.co.kr/*",
+        "*://*.naver.com/*",
+        "*://*.daum.net/*",
+        "*://*.bing.com/*"
       ],
       "js": [
         "content.js"
       ],
-      "run_at": "document_end",
-      "all_frames": false
+      "run_at": "document_idle"
     }
   ],
   "icons": {

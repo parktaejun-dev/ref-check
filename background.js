@@ -1,161 +1,173 @@
-/**
- * Background Service Worker
- * Fetches and analyzes pages for Coupang affiliate links
- */
+// background.js - MV3 Service Worker
+// Rate limiter + URL-based affiliate detection
 
-const COUPANG_PATTERNS = [
-  'coupang.com',
-  'link.coupang.com',
-  'coupa.ng',
-  'partners.coupang.com'
-];
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const HOST_MIN_DELAY_MS = 1000; // 1s between fetches per host
+const FETCH_TIMEOUT_MS = 5000;
 
-const DISCLOSURE_PATTERNS = [
-  /쿠팡\s?파트너스/gi,
-  /파트너스\s?활동/gi,
-  /일정액의\s?수수료/gi,
-  /수수료를\s?제공받/gi,
-  /제휴\s?활동/gi,
-  /이\s?포스팅은.*대가/gi,
-  /소정의\s?수수료/gi
-];
+const cache = new Map(); // url -> { status, timestamp }
+const hostLastFetch = new Map(); // host -> lastFetchTimestamp
 
-/**
- * Analyze HTML content for Coupang links
- */
-function analyzeHtml(html) {
-  const results = {
-    hasCoupangLinks: false,
-    coupangLinkCount: 0,
-    hasDisclosure: false,
-    disclosureText: null
-  };
+function now() {
+  return Date.now();
+}
 
-  // Find all unique Coupang URLs (direct links)
-  const uniqueUrls = new Set();
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  // Match href="...coupang..." or href='...coupang...'
-  const hrefPattern = /href\s*=\s*["']([^"']*(?:coupang\.com|coupa\.ng)[^"']*)["']/gi;
-  let match;
-  while ((match = hrefPattern.exec(html)) !== null) {
-    uniqueUrls.add(match[1]);
+function isCacheValid(entry) {
+  return entry && (now() - entry.timestamp) < CACHE_TTL_MS;
+}
+
+function normalizeUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    u.hash = "";
+
+    // Remove tracking params
+    const removeKeys = [
+      "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+      "gclid", "fbclid", "igshid", "mc_cid", "mc_eid",
+      "spm", "sc_channel", "ref", "referrer", "source"
+    ];
+    removeKeys.forEach((k) => u.searchParams.delete(k));
+
+    // Normalize www
+    u.hostname = u.hostname.replace(/^www\./i, "");
+
+    // Remove trailing slash
+    if (u.pathname.length > 1) {
+      u.pathname = u.pathname.replace(/\/+$/g, "");
+    }
+
+    return u.toString();
+  } catch {
+    return rawUrl;
   }
+}
 
-  // Also check for common URL shorteners used to hide affiliate links
-  const shortenerPatterns = [
-    /href\s*=\s*["']([^"']*sele\.kr[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*bit\.ly[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*han\.gl[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*me2\.do[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*vo\.la[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*url\.kr[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*zrr\.kr[^"']*)["']/gi,
-    /href\s*=\s*["']([^"']*ouo\.io[^"']*)["']/gi
+/**
+ * Scan HTML for affiliate links
+ * Returns: "DETECTED" | "SUSPICIOUS" | "CLEAN"
+ */
+function scanHtmlForAffiliate(htmlText) {
+  const html = htmlText.toLowerCase();
+
+  // 1. Definite affiliate domains (RED badge)
+  const definiteDomains = [
+    "coupa.ng",
+    "link.coupang.com",
+    "coupang.com/vp/products",
+    "partners.coupang.com",
+    "linkprice.com",
+    "linkprice.kr",
+    "adpick.co.kr",
+    "tenping.kr",
+    "clickmon.co.kr",
+    "dable.io",
+    "criteo.com"
   ];
 
-  let shortenerCount = 0;
-  for (const pattern of shortenerPatterns) {
-    let m;
-    while ((m = pattern.exec(html)) !== null) {
-      shortenerCount++;
-    }
+  for (const d of definiteDomains) {
+    if (html.includes(d)) return "DETECTED";
   }
 
-  results.coupangLinkCount = uniqueUrls.size;
-  results.hasCoupangLinks = uniqueUrls.size > 0;
+  // Coupang href regex
+  const coupangHref = /href\s*=\s*["']\s*https?:\/\/(?:www\.)?(?:coupa\.ng|link\.coupang\.com)[^"']*/i;
+  if (coupangHref.test(htmlText)) return "DETECTED";
 
-  // Check for disclosure text (쿠팡 파트너스 고지 문구)
-  for (const pattern of DISCLOSURE_PATTERNS) {
-    const disclosureMatch = html.match(pattern);
-    if (disclosureMatch) {
-      results.hasDisclosure = true;
-      results.disclosureText = disclosureMatch[0];
-      break;
-    }
+  // 2. Suspicious shortener domains (ORANGE badge)
+  const suspiciousDomains = [
+    "bit.ly", "vo.la", "c11.kr", "abit.ly", "me2.do",
+    "han.gl", "url.kr", "zrr.kr", "ouo.io", "sele.kr"
+  ];
+
+  for (const d of suspiciousDomains) {
+    const regex = new RegExp(`href\\s*=\\s*["']\\s*https?:\\/\\/(?:www\\.)?${d.replace(/\./g, '\\.')}`, 'i');
+    if (regex.test(htmlText)) return "SUSPICIOUS";
   }
 
-  // If disclosure text exists but no direct Coupang links found, 
-  // they're likely using URL shorteners - still flag as affiliate
-  if (results.hasDisclosure && !results.hasCoupangLinks && shortenerCount > 0) {
-    results.hasCoupangLinks = true;
-    results.coupangLinkCount = shortenerCount;
-    results.isHidden = true; // Flag that links are hidden behind shorteners
-  }
-
-  return results;
+  return "CLEAN";
 }
 
-/**
- * Handle page analysis request
- */
-async function analyzePage(url) {
-  console.log('[Background] Analyzing:', url);
+async function enforceHostRateLimit(hostname) {
+  const host = (hostname || "").replace(/^www\./i, "");
+  const last = hostLastFetch.get(host) || 0;
+  const elapsed = now() - last;
+
+  if (elapsed < HOST_MIN_DELAY_MS) {
+    await sleep(HOST_MIN_DELAY_MS - elapsed);
+  }
+  hostLastFetch.set(host, now());
+}
+
+async function fetchWithTimeout(url) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-    const response = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'ko-KR,ko;q=0.9'
-      },
-      credentials: 'omit'
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal
     });
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      console.log('[Background] HTTP error:', response.status);
-      return { error: `HTTP ${response.status}`, hasCoupangLinks: false };
-    }
-
-    const html = await response.text();
-    console.log('[Background] Got HTML, length:', html.length);
-
-    const analysis = analyzeHtml(html);
-    console.log('[Background] Analysis result:', analysis);
-
-    return {
-      success: true,
-      url: url,
-      ...analysis
-    };
-  } catch (error) {
-    console.log('[Background] Error:', error.message);
-    if (error.name === 'AbortError') {
-      return { error: 'timeout', hasCoupangLinks: false };
-    }
-    return { error: error.message, hasCoupangLinks: false };
+    const text = await res.text();
+    return text;
+  } finally {
+    clearTimeout(t);
   }
 }
 
-/**
- * Message listener
- */
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('[Background] Received message:', request.action);
+async function analyzeUrl(rawUrl) {
+  const url = normalizeUrl(rawUrl);
 
-  if (request.action === 'analyzePage') {
-    analyzePage(request.url)
-      .then(result => {
-        console.log('[Background] Sending response:', result);
-        sendResponse(result);
-      })
-      .catch(err => {
-        console.log('[Background] Error in analyzePage:', err);
-        sendResponse({ error: err.message, hasCoupangLinks: false });
-      });
-    return true; // Keep channel open for async response
+  // Check cache
+  const cached = cache.get(url);
+  if (isCacheValid(cached)) return cached;
+
+  // Get host for rate limiting
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    const fail = { status: "CLEAN", timestamp: now() };
+    cache.set(url, fail);
+    return fail;
   }
 
-  // Ping for testing
-  if (request.action === 'ping') {
-    sendResponse({ pong: true });
-    return true;
+  await enforceHostRateLimit(host);
+
+  try {
+    const html = await fetchWithTimeout(url);
+    const status = scanHtmlForAffiliate(html);
+
+    const result = { status, timestamp: now() };
+    cache.set(url, result);
+    return result;
+  } catch (e) {
+    console.log("[Background] Fetch error:", e.message);
+    const result = { status: "CLEAN", timestamp: now() };
+    cache.set(url, result);
+    return result;
+  }
+}
+
+// Message handler
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.type === "ANALYZE_URL" && typeof msg.url === "string") {
+    analyzeUrl(msg.url)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true; // async response
+  }
+
+  if (msg.type === "PING") {
+    sendResponse({ ok: true, ts: now() });
   }
 });
 
-console.log('[Background] Service worker initialized');
+console.log("[Background] Service worker initialized");

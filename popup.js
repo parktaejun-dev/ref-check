@@ -1,161 +1,133 @@
-/**
- * Popup Settings Script
- * Manages user preferences for Coupang Detector
- */
+// popup.js - Settings management with permission request
 
 const DEFAULT_SETTINGS = {
-    theme: 'rocket',
-    badgeSize: 'M',
-    badgePosition: 'after',
-    showYellow: true,
+    previewMode: false,
     disabledDomains: []
 };
 
-let currentHostname = '';
+function normalizeHost(host) {
+    return (host || "").toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+}
 
-// ============================================================================
-// Storage Helpers
-// ============================================================================
+async function getActiveTabHost() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url) return "";
+    try {
+        return normalizeHost(new URL(tab.url).hostname);
+    } catch {
+        return "";
+    }
+}
+
+function setStatus(text) {
+    const el = document.getElementById("status");
+    if (el) el.textContent = text || "";
+}
 
 async function loadSettings() {
     return new Promise((resolve) => {
-        chrome.storage.sync.get(DEFAULT_SETTINGS, (result) => {
-            resolve(result);
-        });
-    });
-}
-
-async function saveSetting(key, value) {
-    return new Promise((resolve) => {
-        chrome.storage.sync.set({ [key]: value }, resolve);
+        chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => resolve(items || DEFAULT_SETTINGS));
     });
 }
 
 async function saveSettings(settings) {
     return new Promise((resolve) => {
-        chrome.storage.sync.set(settings, resolve);
+        chrome.storage.sync.set(settings, () => resolve());
     });
 }
 
-// ============================================================================
-// UI Update
-// ============================================================================
-
-function updateUI(settings) {
-    // Theme
-    const themeRadio = document.querySelector(`input[name="theme"][value="${settings.theme}"]`);
-    if (themeRadio) themeRadio.checked = true;
-
-    // Badge Size
-    const sizeRadio = document.querySelector(`input[name="badgeSize"][value="${settings.badgeSize}"]`);
-    if (sizeRadio) sizeRadio.checked = true;
-
-    // Badge Position
-    const positionRadio = document.querySelector(`input[name="badgePosition"][value="${settings.badgePosition}"]`);
-    if (positionRadio) positionRadio.checked = true;
-
-    // Show Yellow
-    document.getElementById('showYellow').checked = settings.showYellow;
-
-    // Current Site Toggle
-    const siteEnabled = !settings.disabledDomains.includes(currentHostname);
-    document.getElementById('siteEnabled').checked = siteEnabled;
-}
-
-// ============================================================================
-// Event Listeners
-// ============================================================================
-
-function setupListeners() {
-    // Theme change
-    document.querySelectorAll('input[name="theme"]').forEach((radio) => {
-        radio.addEventListener('change', (e) => {
-            saveSetting('theme', e.target.value);
-        });
-    });
-
-    // Size change
-    document.querySelectorAll('input[name="badgeSize"]').forEach((radio) => {
-        radio.addEventListener('change', (e) => {
-            saveSetting('badgeSize', e.target.value);
-        });
-    });
-
-    // Position change
-    document.querySelectorAll('input[name="badgePosition"]').forEach((radio) => {
-        radio.addEventListener('change', (e) => {
-            saveSetting('badgePosition', e.target.value);
-        });
-    });
-
-    // Show Yellow toggle
-    document.getElementById('showYellow').addEventListener('change', (e) => {
-        saveSetting('showYellow', e.target.checked);
-    });
-
-    // Site enable/disable toggle
-    document.getElementById('siteEnabled').addEventListener('change', async (e) => {
-        const settings = await loadSettings();
-        let disabledDomains = settings.disabledDomains || [];
-
-        if (e.target.checked) {
-            // Enable: remove from disabled list
-            disabledDomains = disabledDomains.filter((d) => d !== currentHostname);
-        } else {
-            // Disable: add to disabled list
-            if (!disabledDomains.includes(currentHostname)) {
-                disabledDomains.push(currentHostname);
-            }
-        }
-
-        saveSetting('disabledDomains', disabledDomains);
-    });
-
-    // Reset button
-    document.getElementById('resetBtn').addEventListener('click', async () => {
-        if (confirm('모든 설정을 초기화하시겠습니까?')) {
-            await saveSettings(DEFAULT_SETTINGS);
-            updateUI(DEFAULT_SETTINGS);
-        }
-    });
-}
-
-// ============================================================================
-// Get Current Tab
-// ============================================================================
-
-async function getCurrentTabHostname() {
+async function requestAllHostsPermission() {
     return new Promise((resolve) => {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0] && tabs[0].url) {
-                try {
-                    const url = new URL(tabs[0].url);
-                    resolve(url.hostname);
-                } catch {
-                    resolve('');
-                }
-            } else {
-                resolve('');
-            }
-        });
+        chrome.permissions.request(
+            { origins: ["<all_urls>"] },
+            (granted) => resolve(!!granted)
+        );
     });
 }
 
-// ============================================================================
-// Initialize
-// ============================================================================
-
-async function init() {
-    // Get current tab hostname
-    currentHostname = await getCurrentTabHostname();
-    document.getElementById('currentSite').textContent = currentHostname || '알 수 없음';
-
-    // Load and apply settings
-    const settings = await loadSettings();
-    updateUI(settings);
-
-    // Setup event listeners
-    setupListeners();
+async function hasAllHostsPermission() {
+    return new Promise((resolve) => {
+        chrome.permissions.contains(
+            { origins: ["<all_urls>"] },
+            (result) => resolve(!!result)
+        );
+    });
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener("DOMContentLoaded", async () => {
+    const togglePreview = document.getElementById("togglePreview");
+    const toggleSite = document.getElementById("toggleSite");
+
+    let settings = await loadSettings();
+    const perm = await hasAllHostsPermission();
+    const currentHost = await getActiveTabHost();
+
+    // If permission was removed, force previewMode off
+    if (settings.previewMode && !perm) {
+        settings.previewMode = false;
+        await saveSettings(settings);
+    }
+
+    // Update UI
+    togglePreview.checked = !!settings.previewMode;
+
+    const isDisabled = (settings.disabledDomains || []).map(normalizeHost).includes(currentHost);
+    toggleSite.checked = !isDisabled;
+
+    if (settings.previewMode) {
+        setStatus("✅ 미리보기 모드 활성화");
+    } else {
+        setStatus("⏸️ 미리보기 모드 비활성화");
+    }
+
+    // Preview Mode toggle
+    togglePreview.addEventListener("change", async () => {
+        settings = await loadSettings();
+
+        if (togglePreview.checked) {
+            // Request permission
+            const granted = await requestAllHostsPermission();
+            if (!granted) {
+                togglePreview.checked = false;
+                settings.previewMode = false;
+                await saveSettings(settings);
+                setStatus("❌ 권한이 거부되었습니다");
+                return;
+            }
+            settings.previewMode = true;
+            await saveSettings(settings);
+            setStatus("✅ 미리보기 모드 활성화");
+        } else {
+            settings.previewMode = false;
+            await saveSettings(settings);
+            setStatus("⏸️ 미리보기 모드 비활성화");
+        }
+    });
+
+    // Site toggle
+    toggleSite.addEventListener("change", async () => {
+        settings = await loadSettings();
+
+        if (!currentHost) {
+            setStatus("현재 사이트를 감지할 수 없습니다");
+            return;
+        }
+
+        let list = (settings.disabledDomains || []).map(normalizeHost);
+
+        if (toggleSite.checked) {
+            // Enable on this site (remove from disabled list)
+            list = list.filter((d) => d !== currentHost);
+            setStatus(`✅ ${currentHost}에서 활성화`);
+        } else {
+            // Disable on this site
+            if (!list.includes(currentHost)) {
+                list.push(currentHost);
+            }
+            setStatus(`⏸️ ${currentHost}에서 비활성화`);
+        }
+
+        settings.disabledDomains = list;
+        await saveSettings(settings);
+    });
+});
