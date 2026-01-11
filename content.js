@@ -1,9 +1,10 @@
 /**
- * Coupang Partners & Affiliate Link Detector
- * DOM-only Chrome Extension (No Network Requests)
+ * Coupang Partners Link Detector
+ * Shows warning badges on ALL blog links in search results
+ * With user-configurable settings
  */
 
-(function() {
+(function () {
   'use strict';
 
   // ============================================================================
@@ -11,456 +12,548 @@
   // ============================================================================
 
   const CONFIG = {
-    BADGE_TYPES: {
-      RED: {
-        className: 'coupang-badge-red',
-        text: '쿠팡 링크',
-        background: '#E60012',
-        color: '#FFFFFF',
-        title: '쿠팡 도메인 링크 감지'
-      },
-      YELLOW: {
-        className: 'coupang-badge-yellow',
-        text: '고지 문구',
-        background: '#FFD700',
-        color: '#000000',
-        title: '대가성/제휴 고지 문구 근처 외부 링크'
-      }
-    },
-    COUPANG_PATTERNS: [
-      'coupang.com',
-      'link.coupang.com',
-      'coupa.ng'
+    // Sites to ALWAYS analyze (even if parent domain is in SKIP)
+    ANALYZE_DOMAINS: [
+      'blog.naver.com', 'post.naver.com', 'blog.daum.net', 'brunch.co.kr',
+      'tistory.com', 'velog.io', 'medium.com'
     ],
-    DISCLOSURE_REGEX: /쿠팡\s?파트너스|파트너스\s?활동|일정액의\s?수수료|수수료를\s?제공받|제휴\s?활동|대가성|협찬|원고료|대가를\s?제공받/i,
-    DISCLOSURE_BLOCK_SELECTORS: ['p', 'li', 'div', 'section', 'article', 'span'],
-    EXCLUDED_CONTAINERS: ['footer', 'nav', 'header', 'aside'],
-    EXCLUDED_ROLES: ['contentinfo', 'navigation'],
-    TEXT_LENGTH_MIN: 20,
-    TEXT_LENGTH_MAX: 600
+    // Sites to SKIP (don't analyze) - news, portals, official sites
+    SKIP_DOMAINS: [
+      // 포털/검색 (메인만)
+      'www.google.com', 'www.google.co.kr', 'www.naver.com', 'www.daum.net', 'www.bing.com',
+      'search.naver.com', 'search.daum.net',
+      // 뉴스
+      'news.naver.com', 'news.daum.net',
+      'chosun.com', 'donga.com', 'joongang.co.kr', 'hani.co.kr', 'khan.co.kr',
+      'mk.co.kr', 'hankyung.com', 'sbs.co.kr', 'kbs.co.kr', 'mbc.co.kr',
+      'yna.co.kr', 'ytn.co.kr', 'newsis.com', 'news1.kr', 'edaily.co.kr',
+      'zdnet.co.kr', 'bloter.net', 'etnews.com', 'dt.co.kr',
+      // 공식 사이트
+      'apple.com', 'samsung.com', 'lg.com', 'coupang.com', 'kakao.com',
+      'microsoft.com', 'amazon.com', 'github.com', 'stackoverflow.com',
+      // 동영상/SNS
+      'youtube.com', 'youtu.be', 'facebook.com', 'instagram.com', 'twitter.com', 'x.com',
+      // 쇼핑몰 (공식)
+      '11st.co.kr', 'gmarket.co.kr', 'auction.co.kr', 'ssg.com', 'lotteon.com',
+      // 기타 신뢰 사이트
+      'wikipedia.org', 'namu.wiki', 'namuwiki.kr', 'kin.naver.com', 'cafe.naver.com'
+    ],
+    SEARCH_ENGINES: ['google.com', 'google.co.kr', 'search.naver.com', 'search.daum.net', 'bing.com'],
+    MAX_CONCURRENT: 5,
+    CACHE_DURATION: 30 * 60 * 1000,
+    REQUEST_TIMEOUT: 10000
   };
+
+  const DEFAULT_SETTINGS = {
+    theme: 'rocket',
+    badgeSize: 'M',
+    badgePosition: 'after',
+    showYellow: true,
+    disabledDomains: []
+  };
+
+  // Theme definitions
+  const THEMES = {
+    rocket: { red: '🚀 쿠팡', yellow: '👀 광고?' },
+    dog: { red: '🐶 멍!', yellow: '🐾 킁킁' },
+    simple: { red: '⚡ 쿠팡', yellow: '❕ 주의' },
+    text: { red: '쿠팡 파트너스', yellow: '대가성 문구' }
+  };
+
+  const SIZE_MAP = {
+    S: '11px',
+    M: '12px',
+    L: '13px'
+  };
+
+  // ============================================================================
+  // Config Manager
+  // ============================================================================
+
+  class ConfigManager {
+    constructor() {
+      this.settings = { ...DEFAULT_SETTINGS };
+      this.listeners = [];
+    }
+
+    async load() {
+      return new Promise((resolve) => {
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          chrome.storage.sync.get(DEFAULT_SETTINGS, (result) => {
+            this.settings = result;
+            resolve(this.settings);
+          });
+        } else {
+          resolve(this.settings);
+        }
+      });
+    }
+
+    get(key) {
+      return this.settings[key];
+    }
+
+    getTheme() {
+      return THEMES[this.settings.theme] || THEMES.rocket;
+    }
+
+    getFontSize() {
+      return SIZE_MAP[this.settings.badgeSize] || SIZE_MAP.M;
+    }
+
+    isDisabledDomain(hostname) {
+      return (this.settings.disabledDomains || []).includes(hostname);
+    }
+
+    onChange(callback) {
+      this.listeners.push(callback);
+    }
+
+    notifyChange() {
+      this.listeners.forEach((cb) => cb(this.settings));
+    }
+
+    startListening() {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area === 'sync') {
+            Object.keys(changes).forEach((key) => {
+              this.settings[key] = changes[key].newValue;
+            });
+            this.notifyChange();
+          }
+        });
+      }
+    }
+  }
+
+  const configManager = new ConfigManager();
+
+  // ============================================================================
+  // Styles
+  // ============================================================================
+
+  function injectStyles() {
+    // Remove existing styles if any
+    const existing = document.getElementById('cpd-styles');
+    if (existing) existing.remove();
+
+    const isGoogle = window.location.hostname.includes('google');
+    const fontSize = configManager.getFontSize();
+
+    const style = document.createElement('style');
+    style.id = 'cpd-styles';
+    style.textContent = `
+      .cpd-badge {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 3px !important;
+        margin-left: 6px !important;
+        margin-right: 6px !important;
+        padding: 2px 8px !important;
+        border-radius: 4px !important;
+        font-size: ${fontSize} !important;
+        font-weight: 700 !important;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        line-height: 1.4 !important;
+        white-space: nowrap !important;
+        text-decoration: none !important;
+        vertical-align: middle !important;
+        ${isGoogle ? 'transform: scaleY(-1) !important;' : 'transform: none !important;'}
+      }
+
+      .cpd-badge-danger {
+        background: #dc2626 !important;
+        color: white !important;
+      }
+
+      .cpd-badge-safe {
+        background: #16a34a !important;
+        color: white !important;
+      }
+
+      .cpd-badge-warning {
+        background: #f59e0b !important;
+        color: white !important;
+      }
+
+      .cpd-badge-loading {
+        background: #6b7280 !important;
+        color: white !important;
+      }
+
+      .cpd-badge-error {
+        background: #f59e0b !important;
+        color: white !important;
+      }
+
+      .cpd-spinner {
+        display: inline-block !important;
+        width: 10px !important;
+        height: 10px !important;
+        border: 2px solid rgba(255,255,255,0.3) !important;
+        border-top-color: white !important;
+        border-radius: 50% !important;
+        animation: cpd-spin 0.6s linear infinite !important;
+      }
+
+      @keyframes cpd-spin {
+        to { transform: rotate(360deg); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
 
   // ============================================================================
   // Utilities
   // ============================================================================
 
-  class URLHelper {
-    /**
-     * Normalize hostname by removing common prefixes
-     */
-    static normalizeHostname(hostname) {
-      if (!hostname) return '';
-      return hostname.toLowerCase().replace(/^(www\.|m\.|amp\.)/, '');
-    }
-
-    /**
-     * Check if URL is valid http/https
-     */
-    static isValidHttpUrl(url) {
-      if (!url) return false;
-      const lower = url.toLowerCase().trim();
-      return lower.startsWith('http://') || lower.startsWith('https://');
-    }
-
-    /**
-     * Check if link is external
-     */
-    static isExternalLink(linkHref, currentHostname) {
+  function extractUrl(href) {
+    if (!href) return null;
+    if (href.includes('/url?')) {
       try {
-        const linkUrl = new URL(linkHref, window.location.href);
-        const linkHostname = this.normalizeHostname(linkUrl.hostname);
-        const currentNormalized = this.normalizeHostname(currentHostname);
-
-        return linkHostname !== currentNormalized;
-      } catch (e) {
-        return false;
+        const url = new URL(href, window.location.origin);
+        return url.searchParams.get('url') || url.searchParams.get('q') || href;
+      } catch {
+        return href;
       }
     }
+    return href;
+  }
 
-    /**
-     * Check if element is inside excluded container
-     */
-    static isInExcludedContainer(element) {
-      let current = element;
-      while (current && current !== document.body) {
-        const tagName = current.tagName?.toLowerCase();
-        const role = current.getAttribute('role');
+  function shouldAnalyzeUrl(url) {
+    try {
+      const urlObj = new URL(url);
+      const hostname = urlObj.hostname.toLowerCase();
 
-        if (CONFIG.EXCLUDED_CONTAINERS.includes(tagName)) {
-          return true;
-        }
-        if (role && CONFIG.EXCLUDED_ROLES.includes(role)) {
-          return true;
-        }
+      // Skip if it's the current site
+      if (hostname === window.location.hostname) return false;
 
-        current = current.parentElement;
-      }
+      // ALWAYS analyze if in ANALYZE_DOMAINS (whitelist - blog subdomains)
+      if (CONFIG.ANALYZE_DOMAINS.some((d) => hostname.includes(d))) return true;
+
+      // Skip if in SKIP_DOMAINS list (blacklist - news, portals, etc.)
+      if (CONFIG.SKIP_DOMAINS.some((d) => hostname.includes(d))) return false;
+
+      // Analyze everything else (WordPress, custom domains, etc.)
+      return true;
+    } catch {
       return false;
     }
   }
 
-  // ============================================================================
-  // Detector
-  // ============================================================================
+  function isSearchPage() {
+    const hostname = window.location.hostname;
+    const pathname = window.location.pathname;
+    const search = window.location.search;
 
-  class LinkDetector {
-    constructor() {
-      this.currentHostname = window.location.hostname;
-      this.disclosureBlocksCache = new WeakSet();
+    // Google: must be on /search with q parameter
+    if (hostname.includes('google')) {
+      return pathname.includes('/search') && search.includes('q=');
     }
 
-    /**
-     * Detect if link is a Coupang partner link
-     */
-    isCoupangLink(href) {
-      if (!href || !URLHelper.isValidHttpUrl(href)) {
-        return false;
-      }
-
-      const lowerHref = href.toLowerCase();
-      return CONFIG.COUPANG_PATTERNS.some(pattern => lowerHref.includes(pattern));
+    // Naver: must be on search.naver.com
+    if (hostname.includes('naver')) {
+      return hostname.startsWith('search.');
     }
 
-    /**
-     * Find disclosure blocks in the document
-     */
-    findDisclosureBlocks(root = document.body) {
-      const blocks = [];
-
-      for (const selector of CONFIG.DISCLOSURE_BLOCK_SELECTORS) {
-        const elements = root.querySelectorAll(selector);
-
-        for (const el of elements) {
-          // Skip if already processed
-          if (this.disclosureBlocksCache.has(el)) {
-            continue;
-          }
-
-          // Skip if in excluded container
-          if (URLHelper.isInExcludedContainer(el)) {
-            continue;
-          }
-
-          const text = el.textContent || '';
-          const textLength = text.trim().length;
-
-          // Check text length constraints
-          if (textLength < CONFIG.TEXT_LENGTH_MIN || textLength > CONFIG.TEXT_LENGTH_MAX) {
-            continue;
-          }
-
-          // Check for disclosure keywords
-          if (CONFIG.DISCLOSURE_REGEX.test(text)) {
-            blocks.push(el);
-            this.disclosureBlocksCache.add(el);
-          }
-        }
-      }
-
-      return blocks;
+    // Daum: must be on search.daum.net
+    if (hostname.includes('daum')) {
+      return hostname.startsWith('search.');
     }
 
-    /**
-     * Detect badge type for a link
-     * @returns {string|null} 'RED', 'YELLOW', or null
-     */
-    detectBadgeType(linkElement) {
-      const href = linkElement.getAttribute('href');
-
-      // Check RED: Coupang link
-      if (this.isCoupangLink(href)) {
-        return 'RED';
-      }
-
-      // Check YELLOW: External link in disclosure block
-      if (!URLHelper.isValidHttpUrl(href)) {
-        return null;
-      }
-
-      if (!URLHelper.isExternalLink(href, this.currentHostname)) {
-        return null;
-      }
-
-      // Check if link is inside a disclosure block
-      let current = linkElement;
-      while (current && current !== document.body) {
-        if (this.disclosureBlocksCache.has(current)) {
-          return 'YELLOW';
-        }
-        current = current.parentElement;
-      }
-
-      return null;
+    // Bing: must be on /search with q parameter
+    if (hostname.includes('bing')) {
+      return pathname.includes('/search') && search.includes('q=');
     }
+
+    return false;
   }
 
   // ============================================================================
-  // Badge Renderer
+  // Cache & State
   // ============================================================================
 
-  class BadgeRenderer {
-    constructor() {
-      this.badgeClass = 'coupang-affiliate-badge';
-      this.processedLinks = new WeakSet();
+  const cache = new Map();
+  let processedLinks = new WeakSet();
+  let processedUrls = new Set();
+
+  function getCached(url) {
+    const c = cache.get(url);
+    return c && Date.now() - c.ts < CONFIG.CACHE_DURATION ? c.result : null;
+  }
+
+  function setCache(url, result) {
+    cache.set(url, { result, ts: Date.now() });
+  }
+
+  function resetProcessed() {
+    processedLinks = new WeakSet();
+    processedUrls = new Set();
+  }
+
+  // ============================================================================
+  // Badge Functions
+  // ============================================================================
+
+  function createBadge(type, text, tooltip) {
+    const badge = document.createElement('span');
+    badge.className = `cpd-badge cpd-badge-${type}`;
+    badge.textContent = text;
+    if (tooltip) badge.title = tooltip;
+    return badge;
+  }
+
+  function createLoadingBadge() {
+    const badge = document.createElement('span');
+    badge.className = 'cpd-badge cpd-badge-loading';
+    badge.innerHTML = '<span class="cpd-spinner"></span> 분석중';
+    return badge;
+  }
+
+  function insertBadge(titleLink, badge) {
+    // Remove existing badge
+    const parent = titleLink.parentElement;
+    if (parent) {
+      const existing = parent.querySelector('.cpd-badge');
+      if (existing) existing.remove();
     }
 
-    /**
-     * Check if link already has a badge
-     */
-    isProcessed(linkElement) {
-      return this.processedLinks.has(linkElement);
+    // Insert based on position setting
+    const position = configManager.get('badgePosition');
+    if (position === 'before') {
+      titleLink.insertAdjacentElement('beforebegin', badge);
+    } else {
+      titleLink.insertAdjacentElement('afterend', badge);
+    }
+  }
+
+  function removeAllBadges() {
+    document.querySelectorAll('.cpd-badge').forEach((b) => b.remove());
+  }
+
+  function showResult(titleLink, result) {
+    const theme = configManager.getTheme();
+    const showYellow = configManager.get('showYellow');
+    let badge;
+
+    if (result.hasCoupangLinks) {
+      const n = result.coupangLinkCount || 1;
+      const isHidden = result.isHidden;
+      const baseText = theme.red;
+      const text = isHidden ? `${baseText} (숨김${n})` : `${baseText} ${n}개`;
+      const tooltip = result.hasDisclosure
+        ? `${isHidden ? '단축URL로 숨겨진 ' : ''}쿠팡 파트너스 링크 ${n}개 발견\n"${result.disclosureText}"`
+        : `쿠팡 파트너스 링크 ${n}개 발견`;
+      badge = createBadge('danger', text, tooltip);
+    } else if (result.hasDisclosure) {
+      // Has disclosure text but no links found - show as warning if enabled
+      if (!showYellow) return; // Don't show yellow badge if disabled
+      badge = createBadge('warning', theme.yellow, `"${result.disclosureText}" 문구 발견`);
+    } else {
+      // No Coupang links found - don't show any badge
+      return;
     }
 
-    /**
-     * Mark link as processed
-     */
-    markAsProcessed(linkElement) {
-      this.processedLinks.add(linkElement);
+    insertBadge(titleLink, badge);
+  }
+
+  function showError(titleLink, msg) {
+    insertBadge(titleLink, createBadge('error', '⚠️ 오류', msg));
+  }
+
+  // ============================================================================
+  // Analyzer
+  // ============================================================================
+
+  let pending = 0;
+  const queue = [];
+
+  function analyze(titleLink, url) {
+    // Check cache
+    const cached = getCached(url);
+    if (cached) {
+      showResult(titleLink, cached);
+      return Promise.resolve();
     }
 
-    /**
-     * Create badge element
-     */
-    createBadge(badgeType) {
-      const config = CONFIG.BADGE_TYPES[badgeType];
-      const badge = document.createElement('span');
+    // Show loading
+    insertBadge(titleLink, createLoadingBadge());
 
-      badge.className = `${this.badgeClass} ${config.className}`;
-      badge.textContent = config.text;
-      badge.title = config.title;
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        showError(titleLink, '시간초과');
+        resolve();
+      }, CONFIG.REQUEST_TIMEOUT);
 
-      // Apply comprehensive styles to prevent CSS collisions
-      badge.setAttribute('style', `
-        all: unset;
-        display: inline-flex !important;
-        align-items: center !important;
-        margin-left: 4px !important;
-        padding: 2px 6px !important;
-        border-radius: 4px !important;
-        font-size: 11px !important;
-        font-weight: 800 !important;
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif !important;
-        line-height: 1.2 !important;
-        text-decoration: none !important;
-        vertical-align: middle !important;
-        box-sizing: border-box !important;
-        white-space: nowrap !important;
-        z-index: 2147483647 !important;
-        pointer-events: none !important;
-        cursor: default !important;
-        background: ${config.background} !important;
-        color: ${config.color} !important;
-      `.replace(/\n\s+/g, ' '));
+      chrome.runtime.sendMessage({ action: 'analyzePage', url }, (response) => {
+        clearTimeout(timeout);
 
-      return badge;
-    }
-
-    /**
-     * Render badge next to link
-     */
-    renderBadge(linkElement, badgeType) {
-      // Skip if already processed
-      if (this.isProcessed(linkElement)) {
-        return;
-      }
-
-      // Create and insert badge
-      const badge = this.createBadge(badgeType);
-
-      try {
-        // Insert after the link element
-        if (linkElement.nextSibling) {
-          linkElement.parentNode.insertBefore(badge, linkElement.nextSibling);
+        if (chrome.runtime.lastError || !response || response.error) {
+          showError(titleLink, chrome.runtime.lastError?.message || response?.error || '분석실패');
         } else {
-          linkElement.parentNode.appendChild(badge);
+          setCache(url, response);
+          showResult(titleLink, response);
         }
+        resolve();
+      });
+    });
+  }
 
-        // Mark as processed
-        this.markAsProcessed(linkElement);
-      } catch (e) {
-        console.warn('[Coupang Detector] Failed to render badge:', e);
-      }
-    }
-
-    /**
-     * Remove all badges (for cleanup)
-     */
-    removeAllBadges() {
-      const badges = document.querySelectorAll(`.${this.badgeClass}`);
-      badges.forEach(badge => badge.remove());
+  function processQueue() {
+    while (queue.length > 0 && pending < CONFIG.MAX_CONCURRENT) {
+      const { titleLink, url } = queue.shift();
+      pending++;
+      analyze(titleLink, url).finally(() => {
+        pending--;
+        processQueue();
+      });
     }
   }
 
+  function queueAnalysis(titleLink, url) {
+    queue.push({ titleLink, url });
+    processQueue();
+  }
+
   // ============================================================================
-  // Observer Manager
+  // Scanner
   // ============================================================================
 
-  class ObserverManager {
-    constructor(detector, renderer) {
-      this.detector = detector;
-      this.renderer = renderer;
-      this.observer = null;
-      this.processingQueue = [];
-      this.isProcessing = false;
-    }
+  function findBlogTitleLinks() {
+    const results = [];
 
-    /**
-     * Process a single link element
-     */
-    processLink(linkElement) {
-      const badgeType = this.detector.detectBadgeType(linkElement);
-      if (badgeType) {
-        this.renderer.renderBadge(linkElement, badgeType);
-      }
-    }
+    document.querySelectorAll('a[href]').forEach((link) => {
+      if (processedLinks.has(link)) return;
 
-    /**
-     * Process all links in a container
-     */
-    processContainer(container) {
-      // First, find disclosure blocks in this container
-      this.detector.findDisclosureBlocks(container);
+      let href = extractUrl(link.getAttribute('href'));
+      if (!href || !shouldAnalyzeUrl(href)) return;
 
-      // Then process all links
-      const links = container.querySelectorAll('a[href]');
-      links.forEach(link => this.processLink(link));
-    }
-
-    /**
-     * Initial scan of entire document
-     */
-    initialScan() {
-      console.log('[Coupang Detector] Starting initial scan...');
-      this.processContainer(document.body);
-      console.log('[Coupang Detector] Initial scan complete');
-    }
-
-    /**
-     * Handle DOM mutations (incremental scan)
-     */
-    handleMutations(mutations) {
-      const elementsToProcess = new Set();
-
-      for (const mutation of mutations) {
-        // Process added nodes
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            // Check if node itself is a link
-            if (node.tagName === 'A' && node.hasAttribute('href')) {
-              elementsToProcess.add(node);
-            }
-
-            // Check if node contains links
-            if (node.querySelectorAll) {
-              const links = node.querySelectorAll('a[href]');
-              links.forEach(link => elementsToProcess.add(link));
-
-              // Also re-scan for disclosure blocks
-              this.detector.findDisclosureBlocks(node);
-            }
-          }
-        }
-      }
-
-      // Process all collected elements
-      elementsToProcess.forEach(element => {
-        if (!this.renderer.isProcessed(element)) {
-          this.processLink(element);
-        }
-      });
-    }
-
-    /**
-     * Start observing DOM changes
-     */
-    startObserving() {
-      if (this.observer) {
+      let fullUrl;
+      try {
+        fullUrl = new URL(href, window.location.href).href;
+      } catch {
         return;
       }
 
-      this.observer = new MutationObserver((mutations) => {
-        this.handleMutations(mutations);
-      });
-
-      this.observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      console.log('[Coupang Detector] MutationObserver started');
-    }
-
-    /**
-     * Stop observing DOM changes
-     */
-    stopObserving() {
-      if (this.observer) {
-        this.observer.disconnect();
-        this.observer = null;
-        console.log('[Coupang Detector] MutationObserver stopped');
+      // Skip if we already processed this URL
+      if (processedUrls.has(fullUrl)) {
+        processedLinks.add(link);
+        return;
       }
+
+      // Must be inside a search result container (not header, footer, nav)
+      const isInSearchResult = link.closest('[data-hveid]') ||
+        link.closest('[data-ved]') ||
+        link.closest('.g') ||
+        link.closest('#search') ||
+        link.closest('#rso') ||
+        link.closest('.search_result') ||
+        link.closest('.total_wrap'); // Naver
+
+      if (!isInSearchResult) return;
+
+      // Check if this is a main title link
+      const hasText = link.textContent.trim().length > 5;
+      const inH3 = link.closest('h3');
+      const isMainLink = hasText || inH3;
+
+      if (!isMainLink) return;
+
+      const rect = link.getBoundingClientRect();
+      if (rect.width < 50) return;
+
+
+      processedLinks.add(link);
+      processedUrls.add(fullUrl);
+      results.push({ titleLink: link, url: fullUrl });
+    });
+
+    return results;
+  }
+
+  function scan() {
+    if (!isSearchPage()) {
+      console.log('[CPD] Not a search engine page');
+      return;
     }
+
+    // Check if current domain is disabled
+    if (configManager.isDisabledDomain(window.location.hostname)) {
+      console.log('[CPD] Domain is disabled');
+      removeAllBadges();
+      return;
+    }
+
+    console.log('[CPD] Scanning for blog links...');
+
+    const blogLinks = findBlogTitleLinks();
+    console.log(`[CPD] Found ${blogLinks.length} blog links`);
+
+    blogLinks.forEach(({ titleLink, url }) => {
+      queueAnalysis(titleLink, url);
+    });
   }
 
   // ============================================================================
-  // Main Application
+  // Re-render on settings change
   // ============================================================================
 
-  class AffiliateDetectorApp {
-    constructor() {
-      this.detector = new LinkDetector();
-      this.renderer = new BadgeRenderer();
-      this.observerManager = new ObserverManager(this.detector, this.renderer);
-    }
+  function handleSettingsChange() {
+    console.log('[CPD] Settings changed, re-rendering...');
 
-    /**
-     * Initialize the application
-     */
-    init() {
-      // Wait for DOM to be ready
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => this.run());
-      } else {
-        this.run();
-      }
-    }
+    // Re-inject styles with new sizes
+    injectStyles();
 
-    /**
-     * Run the detector
-     */
-    run() {
-      console.log('[Coupang Detector] Initializing...');
+    // Remove all existing badges
+    removeAllBadges();
 
-      // Perform initial scan
-      this.observerManager.initialScan();
+    // Reset processed state
+    resetProcessed();
 
-      // Start observing for dynamic content
-      this.observerManager.startObserving();
-
-      console.log('[Coupang Detector] Ready');
-    }
-
-    /**
-     * Cleanup
-     */
-    destroy() {
-      this.observerManager.stopObserving();
-      this.renderer.removeAllBadges();
-      console.log('[Coupang Detector] Destroyed');
-    }
+    // Re-scan
+    scan();
   }
 
   // ============================================================================
-  // Bootstrap
+  // Initialize
   // ============================================================================
 
-  // Create and initialize the application
-  const app = new AffiliateDetectorApp();
-  app.init();
+  async function init() {
+    console.log('[CPD] Coupang Partner Detector starting...');
 
-  // Expose to window for debugging (optional)
-  if (typeof window !== 'undefined') {
-    window.__coupangDetector = app;
+    // Load settings
+    await configManager.load();
+
+    // Check if disabled on this domain
+    if (configManager.isDisabledDomain(window.location.hostname)) {
+      console.log('[CPD] Disabled on this domain');
+      return;
+    }
+
+    // Inject styles
+    injectStyles();
+
+    // Listen for settings changes
+    configManager.onChange(handleSettingsChange);
+    configManager.startListening();
+
+    // Initial scan with delay
+    setTimeout(scan, 500);
+
+    // Watch for dynamic content
+    let scanTimeout;
+    const observer = new MutationObserver(() => {
+      clearTimeout(scanTimeout);
+      scanTimeout = setTimeout(scan, 800);
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();

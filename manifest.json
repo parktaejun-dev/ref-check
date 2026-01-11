@@ -1,9 +1,22 @@
 {
   "manifest_version": 3,
   "name": "쿠팡 파트너스 & 제휴 링크 감지기",
-  "version": "1.0.0",
-  "description": "쿠팡 파트너스 링크와 대가성/제휴 고지 문구 근처 외부 링크를 자동으로 표시합니다. 네트워크 요청 없이 DOM만 사용합니다.",
-  "permissions": [],
+  "version": "1.2.0",
+  "description": "블로그 링크 클릭 시 쿠팡 파트너스 광고 링크가 있는지 미리 감지하여 경고합니다.",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "host_permissions": [
     "<all_urls>"
   ],

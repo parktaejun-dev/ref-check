@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=360">
+  <title>쿠팡 감지기 설정</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-icon">🔍</div>
+      <div class="header-text">
+        <h1>쿠팡 감지기</h1>
+        <p>설정을 커스터마이즈하세요</p>
+      </div>
+    </header>
+
+    <!-- Current Site Toggle -->
+    <section class="section site-toggle-section">
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">현재 사이트에서 사용</span>
+          <span class="current-site" id="currentSite">-</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="siteEnabled" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- Theme Setting -->
+    <section class="section">
+      <h2 class="section-title">🎨 배지 테마</h2>
+      <div class="theme-options" id="themeOptions">
+        <label class="theme-option">
+          <input type="radio" name="theme" value="rocket">
+          <div class="theme-preview">
+            <span class="badge-preview red">🚀 쿠팡</span>
+            <span class="badge-preview yellow">👀 광고?</span>
+          </div>
+        </label>
+        <label class="theme-option">
+          <input type="radio" name="theme" value="dog">
+          <div class="theme-preview">
+            <span class="badge-preview red">🐶 멍!</span>
+            <span class="badge-preview yellow">🐾 킁킁</span>
+          </div>
+        </label>
+        <label class="theme-option">
+          <input type="radio" name="theme" value="simple">
+          <div class="theme-preview">
+            <span class="badge-preview red">⚡ 쿠팡</span>
+            <span class="badge-preview yellow">❕ 주의</span>
+          </div>
+        </label>
+        <label class="theme-option">
+          <input type="radio" name="theme" value="text">
+          <div class="theme-preview">
+            <span class="badge-preview red">쿠팡 파트너스</span>
+            <span class="badge-preview yellow">대가성 문구</span>
+          </div>
+        </label>
+      </div>
+    </section>
+
+    <!-- Size Setting -->
+    <section class="section">
+      <h2 class="section-title">📏 배지 크기</h2>
+      <div class="size-options" id="sizeOptions">
+        <label class="size-option">
+          <input type="radio" name="badgeSize" value="S">
+          <span class="size-label">S</span>
+        </label>
+        <label class="size-option">
+          <input type="radio" name="badgeSize" value="M">
+          <span class="size-label">M</span>
+        </label>
+        <label class="size-option">
+          <input type="radio" name="badgeSize" value="L">
+          <span class="size-label">L</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Position Setting -->
+    <section class="section">
+      <h2 class="section-title">📍 배지 위치</h2>
+      <div class="position-options" id="positionOptions">
+        <label class="position-option">
+          <input type="radio" name="badgePosition" value="after">
+          <span class="position-label">링크 뒤</span>
+        </label>
+        <label class="position-option">
+          <input type="radio" name="badgePosition" value="before">
+          <span class="position-label">링크 앞</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Show Yellow Badge Toggle -->
+    <section class="section">
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">노란색 경고 배지 표시</span>
+          <span class="setting-desc">고지 문구만 있는 경우</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="showYellow" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span class="version">v1.2.0</span>
+      <span class="reset-btn" id="resetBtn">초기화</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
