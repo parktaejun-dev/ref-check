@@ -133,7 +133,20 @@ async function analyzeUrl(rawUrl) {
   await enforceHostRateLimit(host);
 
   try {
-    const html = await fetchWithTimeout(url);
+    let html = await fetchWithTimeout(url);
+
+    // Special handling for Naver blog (iframe-based)
+    if (host.includes("blog.naver.com")) {
+      // Extract iframe src: /PostView.naver?blogId=xxx&logNo=xxx
+      const iframeMatch = html.match(/src="(\/PostView\.naver\?[^"]+)"/);
+      if (iframeMatch && iframeMatch[1]) {
+        const postViewUrl = `https://blog.naver.com${iframeMatch[1]}`;
+        console.log("[Background] Fetching Naver PostView:", postViewUrl);
+        await sleep(500); // Small delay
+        html = await fetchWithTimeout(postViewUrl);
+      }
+    }
+
     const status = scanHtmlForAffiliate(html);
 
     const result = { status, timestamp: now() };
