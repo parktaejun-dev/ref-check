@@ -73,7 +73,8 @@ function scanHtmlForAffiliate(htmlText) {
   // 2. Suspicious shortener domains (ORANGE badge)
   const suspiciousDomains = [
     "bit.ly", "vo.la", "c11.kr", "abit.ly", "me2.do",
-    "han.gl", "url.kr", "zrr.kr", "ouo.io", "sele.kr"
+    "han.gl", "url.kr", "zrr.kr", "ouo.io", "sele.kr",
+    "link24.kr", "s.click.aliexpress.com", "reurl.kr"
   ];
 
   for (const d of suspiciousDomains) {
