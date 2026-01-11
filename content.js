@@ -180,17 +180,22 @@ function createBadge(state, resultStatus) {
   } else {
     // Text style (default)
     badge.style.cssText = `
-      display: inline-flex;
-      align-items: center;
-      margin-left: 4px;
-      padding: 1px 5px;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 500;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      vertical-align: middle;
-      white-space: nowrap;
-      ${isGoogle ? 'transform: scaleY(-1);' : ''}
+      display: inline-flex !important;
+      align-items: center !important;
+      margin-left: 4px !important;
+      padding: 1px 5px !important;
+      border-radius: 3px !important;
+      font-size: 10px !important;
+      font-weight: 500 !important;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
+      vertical-align: middle !important;
+      white-space: nowrap !important;
+      width: auto !important;
+      max-width: 50px !important;
+      height: auto !important;
+      position: relative !important;
+      float: none !important;
+      ${isGoogle ? 'transform: scaleY(-1) !important;' : ''}
     `;
 
     if (state === "analyzing") {
